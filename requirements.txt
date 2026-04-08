@@ -1,0 +1,8 @@
+gymnasium[atari]
+AutoROM[accept-rom-license]
+minigrid
+torch
+numpy
+matplotlib
+opencv-python
+tqdm
