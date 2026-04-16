@@ -83,7 +83,7 @@ class DQNAtariPreprocessWrapper(gym.Wrapper):
 
 
 def make_atari_dqn_env(
-    env_id: str = "ALE/Breakout-v5",
+    env_id: str = "ALE/Pong-v5",
     *,
     render_mode: str | None = None,
     frame_stack: int = 4,
