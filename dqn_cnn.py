@@ -1,4 +1,4 @@
-"""DQN-style conv Q-network (4×84×84) plus TD MSE loss helpers."""
+"""DQN-style conv Q-network (4×84×84) plus Nature DQN head and TD MSE loss helpers."""
 
 from __future__ import annotations
 
@@ -9,6 +9,18 @@ from torch import nn
 
 # Spatial: 84 → 20 → 9 → 7 with kernel/stride as in Mnih et al. conv stack.
 _CONV_FLAT_DIM = 64 * 7 * 7
+
+
+def _conv_stack(in_channels: int) -> nn.Sequential:
+    return nn.Sequential(
+        nn.Conv2d(in_channels, 32, kernel_size=8, stride=4),
+        nn.ReLU(inplace=True),
+        nn.Conv2d(32, 64, kernel_size=4, stride=2),
+        nn.ReLU(inplace=True),
+        nn.Conv2d(64, 64, kernel_size=3, stride=1),
+        nn.ReLU(inplace=True),
+        nn.Flatten(),
+    )
 
 
 class DQNConv(nn.Module):
@@ -30,19 +42,31 @@ class DQNConv(nn.Module):
         super().__init__()
         self.in_channels = in_channels
         self.n_actions = n_actions
-        self.features = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=8, stride=4),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),
-            nn.ReLU(inplace=True),
-            nn.Flatten(),
-        )
+        self.features = _conv_stack(in_channels)
         self.head = nn.Linear(_CONV_FLAT_DIM, n_actions)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.head(self.features(x))
+
+
+class NatureDQN(nn.Module):
+    """
+    Nature DQN (Mnih et al., 2015): same conv stack as :class:`DQNConv`, then
+    a fully connected layer of 512 ReLU units, then linear output per action.
+    """
+
+    def __init__(self, *, in_channels: int = 4, n_actions: int = 6) -> None:
+        super().__init__()
+        self.in_channels = in_channels
+        self.n_actions = n_actions
+        self.features = _conv_stack(in_channels)
+        self.fc_hidden = nn.Linear(_CONV_FLAT_DIM, 512)
+        self.head = nn.Linear(512, n_actions)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.features(x)
+        x = F.relu(self.fc_hidden(x))
+        return self.head(x)
 
 
 def dqn_td_loss(
@@ -105,9 +129,16 @@ if __name__ == "__main__":
         assert out.shape == (2, n_act), out.shape
     print("DQNConv shape checks OK.")
 
+    for n_act in (3, 6):
+        net = NatureDQN(n_actions=n_act)
+        batch = torch.randn(2, 4, 84, 84)
+        out = net(batch)
+        assert out.shape == (2, n_act), out.shape
+    print("NatureDQN shape checks OK.")
+
     B, n_act = 8, 6
-    online = DQNConv(n_actions=n_act)
-    target = DQNConv(n_actions=n_act)
+    online = NatureDQN(n_actions=n_act)
+    target = NatureDQN(n_actions=n_act)
     target.load_state_dict(online.state_dict())
 
     states = torch.randn(B, 4, 84, 84)
