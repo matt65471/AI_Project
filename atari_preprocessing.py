@@ -4,14 +4,78 @@ from __future__ import annotations
 
 from collections import deque
 
+import ale_py
 import cv2
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+# ale-py ≥ 0.11 requires explicit registration with Gymnasium.
+gym.register_envs(ale_py)
+
 
 # ITU-R BT.601 luma from RGB (same idea as extracting "Y" from RGB)
 _RGB_TO_Y = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+
+
+class NoopResetWrapper(gym.Wrapper):
+    """Execute a random number of no-op actions at the start of each episode.
+
+    The paper uses up to 30 no-ops so the agent cannot memorize a fixed
+    initial state.  Action 0 is assumed to be NOOP.
+    """
+
+    def __init__(self, env: gym.Env, noop_max: int = 30) -> None:
+        super().__init__(env)
+        self.noop_max = noop_max
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        n_noops = np.random.randint(1, self.noop_max + 1)
+        for _ in range(n_noops):
+            obs, _, terminated, truncated, info = self.env.step(0)
+            if terminated or truncated:
+                obs, info = self.env.reset(**kwargs)
+        return obs, info
+
+
+class EpisodicLifeWrapper(gym.Wrapper):
+    """Treat the loss of a life as a terminal state (but do not reset the game).
+
+    This improves value estimation for games with multiple lives by giving
+    the agent a denser terminal signal.  The actual game only resets when
+    *all* lives are gone.
+    """
+
+    def __init__(self, env: gym.Env) -> None:
+        super().__init__(env)
+        self.lives = 0
+        self._real_done = True
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        self._real_done = terminated or truncated
+        lives = info.get("lives", self.lives)
+        if 0 < lives < self.lives:
+            terminated = True
+        self.lives = lives
+        return obs, reward, terminated, truncated, info
+
+    def reset(self, **kwargs):
+        if self._real_done:
+            obs, info = self.env.reset(**kwargs)
+        else:
+            # Step with NOOP to advance from the life-lost state.
+            obs, _, _, _, info = self.env.step(0)
+        self.lives = info.get("lives", 0)
+        return obs, info
+
+
+class ClipRewardWrapper(gym.RewardWrapper):
+    """Clip rewards to {-1, 0, +1} via the sign function (Section 5.1 of paper)."""
+
+    def reward(self, reward: float) -> float:  # type: ignore[override]
+        return float(np.sign(reward))
 
 
 class DQNAtariPreprocessWrapper(gym.Wrapper):
@@ -88,7 +152,25 @@ def make_atari_dqn_env(
     render_mode: str | None = None,
     frame_stack: int = 4,
     screen_size: tuple[int, int] = (84, 84),
+    noop_max: int = 30,
+    episodic_life: bool = True,
+    clip_reward: bool = True,
 ) -> gym.Env:
-    """``gym.make`` with RGB observations plus :class:`DQNAtariPreprocessWrapper`."""
+    """Build a fully preprocessed DQN Atari environment.
+
+    Wrappers applied in order (innermost first):
+      1. ALE gym env (RGB, frameskip=4 via ALE default)
+      2. NoopResetWrapper  – random start position
+      3. EpisodicLifeWrapper – life loss = terminal signal
+      4. DQNAtariPreprocessWrapper – max-pool, grayscale, resize, frame-stack
+      5. ClipRewardWrapper – reward in {-1, 0, +1}
+    """
     env = gym.make(env_id, render_mode=render_mode, obs_type="rgb")
-    return DQNAtariPreprocessWrapper(env, frame_stack=frame_stack, screen_size=screen_size)
+    if noop_max > 0:
+        env = NoopResetWrapper(env, noop_max=noop_max)
+    if episodic_life:
+        env = EpisodicLifeWrapper(env)
+    env = DQNAtariPreprocessWrapper(env, frame_stack=frame_stack, screen_size=screen_size)
+    if clip_reward:
+        env = ClipRewardWrapper(env)
+    return env
