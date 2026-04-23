@@ -10,9 +10,7 @@ from dqn_model import NatureDQN
 from torch.utils.tensorboard import SummaryWriter
 import os
 
-CHECKPOINT_PATH = "checkpoints/dqn_pong_checkpoint.pth"
-
-def save_checkpoint(step, policy_net, target_net, optimizer, episode_rewards):
+def save_checkpoint(step, policy_net, target_net, optimizer, episode_rewards, checkpoint_path):
     os.makedirs("checkpoints", exist_ok=True)
     torch.save({
         "step": step,
@@ -20,13 +18,13 @@ def save_checkpoint(step, policy_net, target_net, optimizer, episode_rewards):
         "target_net": target_net.state_dict(),
         "optimizer": optimizer.state_dict(),
         "episode_rewards": episode_rewards,
-    }, CHECKPOINT_PATH)
+    }, checkpoint_path)
     print(f"Checkpoint saved at step {step}")
 
-def load_checkpoint(policy_net, target_net, optimizer):
-    if not os.path.exists(CHECKPOINT_PATH):
+def load_checkpoint(policy_net, target_net, optimizer, checkpoint_path):
+    if not os.path.exists(checkpoint_path):
         return 0, []
-    ckpt = torch.load(CHECKPOINT_PATH)
+    ckpt = torch.load(checkpoint_path)
     policy_net.load_state_dict(ckpt["policy_net"])
     target_net.load_state_dict(ckpt["target_net"])
     optimizer.load_state_dict(ckpt["optimizer"])
@@ -34,6 +32,7 @@ def load_checkpoint(policy_net, target_net, optimizer):
     return ckpt["step"], ckpt["episode_rewards"]
 
 def train():
+    # Hyperparameters
     ENV_NAME = "ALE/Pong-v5"
     SEED = 42
     LR = 1e-4
@@ -47,14 +46,17 @@ def train():
     EPS_END = 0.1
     EPS_DECAY = 500000
 
+    CHECKPOINT_PATH = f"checkpoints/dqn_pong_seed{SEED}_checkpoint.pth"
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device} | Seed: {SEED}")
-    
-    torch.manual_seed(SEED)
+
+    random.seed(SEED)
     np.random.seed(SEED)
     torch.manual_seed(SEED)
     torch.cuda.manual_seed(SEED)
 
+    # Make environment
     env = make_atari_env(ENV_NAME, render_mode=None)
     env.action_space.seed(SEED)
 
@@ -65,7 +67,8 @@ def train():
     optimizer = optim.Adam(policy_net.parameters(), lr=LR)
     memory = deque(maxlen=REPLAY_SIZE)
 
-    start_step, episode_rewards = load_checkpoint(policy_net, target_net, optimizer)
+    # Load checkpoint if it exists
+    start_step, episode_rewards = load_checkpoint(policy_net, target_net, optimizer, CHECKPOINT_PATH)
 
     writer = SummaryWriter(log_dir=f"logs/dqn_pong_seed{SEED}", purge_step=start_step)
 
@@ -73,6 +76,7 @@ def train():
     episode_reward = 0
 
     for step in range(start_step, TOTAL_STEPS):
+        # Choose Action (Epsilon-Greedy Policy)
         epsilon = max(EPS_END, EPS_START - step / EPS_DECAY)
         if random.random() < epsilon:
             action = env.action_space.sample()
@@ -81,37 +85,45 @@ def train():
             with torch.no_grad():
                 action = policy_net(state_t).argmax().item()
 
+        # Step in Environment
         next_obs, reward, done, truncated, _ = env.step(action)
         memory.append((obs, action, reward, next_obs, done))
         obs = next_obs
         episode_reward += reward
 
+        # Optimize the loss function
         if len(memory) > LEARNING_STARTS:
-            batch = random.sample(memory, BATCH_SIZE)
-            states, actions, rewards, next_states, dones = zip(*batch)
+            if step % 4 == 0:  # Only optimize every 4 steps to save time
+                batch = random.sample(memory, BATCH_SIZE)
+                states, actions, rewards, next_states, dones = zip(*batch)
 
-            states = torch.tensor(np.array(states), dtype=torch.uint8).to(device)
-            actions = torch.tensor(actions).unsqueeze(1).to(device)
-            rewards = torch.tensor(rewards, dtype=torch.float32).to(device)
-            next_states = torch.tensor(np.array(next_states), dtype=torch.uint8).to(device)
-            dones = torch.tensor(dones, dtype=torch.float32).to(device)
+                # Cast to float32 and normalize pixels
+                states      = torch.tensor(np.array(states),      dtype=torch.uint8).to(device)
+                actions     = torch.tensor(actions).unsqueeze(1).to(device)
+                rewards     = torch.tensor(rewards, dtype=torch.float32).to(device)
+                next_states = torch.tensor(np.array(next_states), dtype=torch.uint8).to(device)
+                dones       = torch.tensor(dones, dtype=torch.float32).to(device)
 
-            current_q = policy_net(states).gather(1, actions).squeeze()
+                # Current Q values
+                current_q = policy_net(states).gather(1, actions).squeeze()
 
-            with torch.no_grad():
-                max_next_q = target_net(next_states).max(1)[0]
-                target_q = rewards + GAMMA * max_next_q * (1 - dones)
+                # Target Q values (Bellman Equation)
+                with torch.no_grad():
+                    max_next_q = target_net(next_states).max(1)[0]
+                    target_q = rewards + GAMMA * max_next_q * (1 - dones)
 
-            loss = nn.SmoothL1Loss()(current_q, target_q)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                loss = nn.SmoothL1Loss()(current_q, target_q)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
-            writer.add_scalar("Losses/TD_Loss", loss.item(), step)
+                writer.add_scalar("Losses/TD_Loss", loss.item(), step)
 
+        # Update Target Network
         if step % TARGET_UPDATE_FREQ == 0:
             target_net.load_state_dict(policy_net.state_dict())
 
+        # Logging & Periodic Saving
         if done or truncated:
             print(f"Step: {step} | Reward: {episode_reward} | Epsilon: {epsilon:.2f}")
 
@@ -122,9 +134,10 @@ def train():
                 mean_100 = np.mean(episode_rewards[-100:])
                 writer.add_scalar("Charts/Mean100_Reward", mean_100, step)
 
+            # Save checkpoint every 5000 steps
             if step > 0 and step % 5000 < 100:
-                save_checkpoint(step, policy_net, target_net, optimizer, episode_rewards)
-                torch.save(policy_net.state_dict(), "dqn_pong_model.pth")
+                save_checkpoint(step, policy_net, target_net, optimizer, episode_rewards, CHECKPOINT_PATH)
+                torch.save(policy_net.state_dict(), f"dqn_pong_seed{SEED}_model.pth")
 
             obs, _ = env.reset()
             episode_reward = 0
