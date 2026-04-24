@@ -9,6 +9,8 @@ from wrappers.minigrid_wrapper import make_minigrid_env
 from torch.utils.tensorboard import SummaryWriter
 import os
 
+#torch.backends.nnpack.set_flags(False)
+
 def save_checkpoint(step, policy_net, target_net, optimizer, episode_rewards, checkpoint_path):
     os.makedirs("checkpoints", exist_ok=True)
     torch.save({
