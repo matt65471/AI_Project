@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
                    help="Feed-forward DQN or recurrent DQN (LSTM).")
     p.add_argument("--lstm-hidden",  type=int, default=128,
                    help="Hidden size of the LSTM (DRQN only).")
-    p.add_argument("--seq-len",      type=int, default=24,
+    p.add_argument("--seq-len",      type=int, default=16,
                    help="Length of subsequences sampled for DRQN updates (try 16-32).")
     p.add_argument("--env",          default=None,
                    help="Env id; defaults to ALE/Pong-v5 for atari, MiniGrid-MemoryS9-v0 for minigrid")
