@@ -9,6 +9,8 @@ from dqn_model import NatureDQN
 from torch.utils.tensorboard import SummaryWriter
 import os
 
+#torch.backends.nnpack.set_flags(False)  # Disable NNPACK to avoid potential issues on some platforms
+
 def save_checkpoint(step, policy_net, target_net, optimizer, episode_rewards, checkpoint_path):
     os.makedirs("checkpoints", exist_ok=True)
     torch.save({
@@ -33,19 +35,36 @@ def load_checkpoint(policy_net, target_net, optimizer, checkpoint_path):
 def train():
     # Hyperparameters
     ENV_NAME = "MiniGrid-MemoryS7-v0"
-    SEED = 42
-    LR = 1e-4
+    SEED = 32
+
+    # Same LR as paper
+    LR = 0.00025
+
+    # Discount factor — paper sets γ = 0.99 throughout
     GAMMA = 0.99
+
+    # Minibatch size from paper
     BATCH_SIZE = 32
-    REPLAY_SIZE = 20000
+
+    # Reduced from paper's 1M
+    REPLAY_SIZE = 100000
+
+    # Start learning after 10k steps 
     LEARNING_STARTS = 10000
+
+    # Target network update frequency — reduced from 10k for faster MiniGrid episodes
     TARGET_UPDATE_FREQ = 1000
+
+    # MiniGrid needs fewer steps than Atari to show the failure mode
     TOTAL_STEPS = 500000
+
     EPS_START = 1.0
     EPS_END = 0.1
-    EPS_DECAY = 500000
 
-    CHECKPOINT_PATH = f"checkpoints/dqn_minigrid_seed{SEED}_checkpoint.pth"  # ← moved inside train()
+    # Anneal epsilon over first 250k steps
+    EPS_DECAY_STEPS = 250000
+
+    CHECKPOINT_PATH = f"checkpoints/dqn_minigrid_seed{SEED}_checkpoint.pth"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device} | Seed: {SEED}")
@@ -62,8 +81,18 @@ def train():
     policy_net = NatureDQN(env.action_space.n).to(device)
     target_net = NatureDQN(env.action_space.n).to(device)
     target_net.load_state_dict(policy_net.state_dict())
+    target_net.eval()  # Target net is never trained directly
 
-    optimizer = optim.Adam(policy_net.parameters(), lr=LR)
+    # RMSProp with same paper hyperparameters as Pong
+    optimizer = optim.RMSprop(
+        policy_net.parameters(),
+        lr=LR,
+        alpha=0.95,
+        eps=0.01,
+        momentum=0.95,
+        centered=True
+    )
+
     memory = deque(maxlen=REPLAY_SIZE)
 
     # Load checkpoint if it exists
@@ -76,7 +105,9 @@ def train():
 
     for step in range(start_step, TOTAL_STEPS):
         # Choose Action (Epsilon-Greedy Policy)
-        epsilon = max(EPS_END, EPS_START - step / EPS_DECAY)
+        # Anneal ε linearly from 1.0 to 0.1 over 250k steps
+        epsilon = max(EPS_END, EPS_START - (step / EPS_DECAY_STEPS) * (EPS_START - EPS_END))
+
         if random.random() < epsilon:
             action = env.action_space.sample()
         else:
@@ -86,17 +117,19 @@ def train():
 
         # Step in Environment
         next_obs, reward, done, truncated, _ = env.step(action)
-        memory.append((obs, action, reward, next_obs, done))
-        obs = next_obs
-        episode_reward += reward
 
-        # Optimize the loss function
+        # Store transition — MiniGrid rewards are already in (0, 1) so no clipping needed
+        memory.append((obs, action, reward, next_obs, done or truncated))
+        obs = next_obs
+        episode_reward += reward  # Track real reward for logging
+
+        # Optimize every 4 steps — same as paper
         if len(memory) > LEARNING_STARTS:
             if step % 4 == 0:  # Only optimize every 4 steps to save time
                 batch = random.sample(memory, BATCH_SIZE)
                 states, actions, rewards, next_states, dones = zip(*batch)
 
-                # Cast to float32 and normalize pixels
+                # Cast to uint8 — NatureDQN normalizes internally
                 states      = torch.tensor(np.array(states),      dtype=torch.uint8).to(device)
                 actions     = torch.tensor(actions).unsqueeze(1).to(device)
                 rewards     = torch.tensor(rewards, dtype=torch.float32).to(device)
@@ -111,7 +144,9 @@ def train():
                     max_next_q = target_net(next_states).max(1)[0]
                     target_q = rewards + GAMMA * max_next_q * (1 - dones)
 
+                # Huber loss — clips error to [-1, 1] per paper
                 loss = nn.SmoothL1Loss()(current_q, target_q)
+
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -124,7 +159,7 @@ def train():
 
         # Logging & Periodic Saving
         if done or truncated:
-            print(f"Step: {step} | Reward: {episode_reward} | Epsilon: {epsilon:.2f}")
+            print(f"Step: {step} | Reward: {episode_reward} | Epsilon: {epsilon:.3f}")
 
             episode_rewards.append(episode_reward)
             writer.add_scalar("Charts/Episode_Reward", episode_reward, step)
