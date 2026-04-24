@@ -35,8 +35,10 @@ class DQNNetwork(nn.Module):
             nn.ReLU(),
         )
 
-        # 64 * 7 * 7 = 3136 for an 84×84 input
-        conv_out_size = 64 * 7 * 7
+        # Infer conv output size from a dummy 84x84 input.
+        with torch.no_grad():
+            dummy = torch.zeros(1, frame_stack, 84, 84)
+            conv_out_size = int(self.conv(dummy).flatten(start_dim=1).shape[1])
 
         self.fc = nn.Sequential(
             nn.Linear(conv_out_size, 512),

@@ -1,12 +1,12 @@
-"""Evaluation & visualisation for a trained DQN Pong agent.
+"""Evaluation & visualisation for a trained DQN Atari/MiniGrid agent.
 
 Usage
 -----
   # Watch the agent play (renders to screen):
-  python evaluate.py --checkpoint checkpoints/dqn_pong_final.pt --render
+  python evaluate.py --domain atari --env ALE/Pong-v5 --checkpoint checkpoints/dqn_atari_final.pt --render
 
   # Silent evaluation over N episodes:
-  python evaluate.py --checkpoint checkpoints/dqn_pong_final.pt --episodes 30
+  python evaluate.py --domain minigrid --env MiniGrid-MemoryS9-v0 --checkpoint checkpoints/dqn_minigrid_final.pt --episodes 30
 
   # Plot training curves from the CSV log:
   python evaluate.py --plot logs/training_log.csv
@@ -20,7 +20,7 @@ import random
 import numpy as np
 import torch
 
-from atari_preprocessing import make_atari_dqn_env
+from atari_preprocessing import make_dqn_env
 from dqn_agent import DQNAgent
 
 
@@ -29,16 +29,18 @@ from dqn_agent import DQNAgent
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Evaluate a trained DQN Pong agent.")
+    p = argparse.ArgumentParser(description="Evaluate a trained DQN Atari/MiniGrid agent.")
     p.add_argument("--checkpoint", default=None,
                    help="Path to a .pt checkpoint file.")
-    p.add_argument("--env",       default="ALE/Pong-v5")
+    p.add_argument("--domain",    choices=["atari", "minigrid"], default="minigrid")
+    p.add_argument("--env",       default=None,
+                   help="Env id; defaults to ALE/Pong-v5 for atari, MiniGrid-MemoryS9-v0 for minigrid")
     p.add_argument("--episodes",  type=int, default=10,
                    help="Number of evaluation episodes.")
     p.add_argument("--epsilon",   type=float, default=0.05,
                    help="Exploration rate used during evaluation.")
     p.add_argument("--render",    action="store_true",
-                   help="Render the game to screen (human mode).")
+                   help="Render the game to screen (human mode where supported).")
     p.add_argument("--plot",      default=None,
                    help="Path to training_log.csv; plot reward curves instead of playing.")
     p.add_argument("--device",    default=None)
@@ -58,6 +60,7 @@ def set_seed(seed: int) -> None:
 
 def run_episodes(
     agent: DQNAgent,
+    domain: str,
     env_id: str,
     n_episodes: int,
     epsilon: float,
@@ -65,12 +68,11 @@ def run_episodes(
 ) -> list[float]:
     """Play n_episodes and return raw (unclipped) episode rewards."""
     render_mode = "human" if render else None
-    env = make_atari_dqn_env(
+    env = make_dqn_env(
+        domain,
         env_id,
         render_mode=render_mode,
-        episodic_life=False,
         clip_reward=False,
-        noop_max=30,
     )
 
     rewards = []
@@ -140,7 +142,7 @@ def plot_training(csv_path: str) -> None:
 
     ax.set_xlabel("Environment steps")
     ax.set_ylabel("Episode reward")
-    ax.set_title("DQN on Pong – training curve")
+    ax.set_title("DQN training curve")
     ax.legend()
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(
         lambda x, _: f"{x/1e6:.1f}M"))
@@ -168,8 +170,10 @@ def main() -> None:
     if args.checkpoint is None:
         raise ValueError("Provide --checkpoint or --plot.")
 
+    env_id = args.env or ("ALE/Pong-v5" if args.domain == "atari" else "MiniGrid-MemoryS9-v0")
+
     # Determine n_actions from the env.
-    tmp_env = make_atari_dqn_env(args.env)
+    tmp_env = make_dqn_env(args.domain, env_id)
     n_actions = tmp_env.action_space.n
     obs_shape = tmp_env.observation_space.shape
     tmp_env.close()
@@ -179,12 +183,14 @@ def main() -> None:
     agent.online_net.eval()
 
     print(f"Loaded checkpoint: {args.checkpoint}")
+    print(f"Domain           : {args.domain}")
+    print(f"Environment      : {env_id}")
     print(f"Steps trained    : {agent.steps_done:,}")
     print(f"Device           : {agent.device}")
     print(f"Running {args.episodes} episode(s) with ε={args.epsilon:.2f} …\n")
 
     rewards = run_episodes(
-        agent, args.env, args.episodes, args.epsilon, args.render
+        agent, args.domain, env_id, args.episodes, args.epsilon, args.render
     )
 
     print(f"\nResults over {len(rewards)} episodes:")

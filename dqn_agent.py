@@ -99,8 +99,9 @@ class DQNAgent:
         self.device = torch.device(device)
 
         # Networks
-        self.online_net = DQNNetwork(n_actions).to(self.device)
-        self.target_net = DQNNetwork(n_actions).to(self.device)
+        frame_stack = obs_shape[0]
+        self.online_net = DQNNetwork(n_actions, frame_stack=frame_stack).to(self.device)
+        self.target_net = DQNNetwork(n_actions, frame_stack=frame_stack).to(self.device)
         self._sync_target()
         self.target_net.eval()
 

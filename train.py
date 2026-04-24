@@ -1,13 +1,14 @@
-"""Training script for DQN on Pong (Mnih et al., 2015).
+"""Training script for DQN on either Pong (Atari) or MiniGrid Memory.
 
 Usage
 -----
   python train.py                          # default settings
-  python train.py --total-steps 10000000  # full paper training run
-  python train.py --resume checkpoints/dqn_pong_step_500000.pt
+  python train.py --total-steps 1000000
+  python train.py --domain atari --env ALE/Pong-v5
+  python train.py --domain minigrid --env MiniGrid-MemoryS9-v0
 
 The script logs to the terminal and saves:
-  - checkpoints/dqn_pong_step_<N>.pt  every --save-freq steps
+  - checkpoints/dqn_<domain>_step_<N>.pt  every --save-freq steps
   - logs/training_log.csv             episode-level CSV log
 """
 
@@ -22,7 +23,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from atari_preprocessing import make_atari_dqn_env
+from atari_preprocessing import make_dqn_env
 from dqn_agent import DQNAgent
 
 
@@ -31,12 +32,13 @@ from dqn_agent import DQNAgent
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Train DQN on Pong.")
-    p.add_argument("--env",          default="ALE/Pong-v5")
-    p.add_argument("--total-steps",  type=int,   default=10_000_000,
-                   help="Total environment steps (paper uses 50 M; 10 M is enough for Pong)")
-    p.add_argument("--replay-capacity", type=int, default=1_000_000)
-    p.add_argument("--replay-start",    type=int, default=50_000,
+    p = argparse.ArgumentParser(description="Train DQN on Atari Pong or MiniGrid Memory.")
+    p.add_argument("--domain",       choices=["atari", "minigrid"], default="minigrid")
+    p.add_argument("--env",          default=None,
+                   help="Env id; defaults to ALE/Pong-v5 for atari, MiniGrid-MemoryS9-v0 for minigrid")
+    p.add_argument("--total-steps",  type=int,   default=1_000_000)
+    p.add_argument("--replay-capacity", type=int, default=250_000)
+    p.add_argument("--replay-start",    type=int, default=20_000,
                    help="Steps of random exploration before learning begins")
     p.add_argument("--target-update",   type=int, default=10_000,
                    help="Frequency (in gradient updates) to sync target network")
@@ -44,8 +46,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gamma",           type=float, default=0.99)
     p.add_argument("--lr",              type=float, default=0.00025)
     p.add_argument("--eps-start",       type=float, default=1.0)
-    p.add_argument("--eps-end",         type=float, default=0.1)
-    p.add_argument("--eps-anneal",      type=int,   default=1_000_000)
+    p.add_argument("--eps-end",         type=float, default=0.05)
+    p.add_argument("--eps-anneal",      type=int,   default=500_000)
     p.add_argument("--save-freq",       type=int,   default=500_000,
                    help="Save a checkpoint every N steps")
     p.add_argument("--eval-freq",       type=int,   default=100_000,
@@ -72,15 +74,12 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def evaluate(agent: DQNAgent, env_id: str, n_episodes: int) -> float:
-    """Run n_episodes with ε=0.05 and return mean total (unclipped) reward."""
-    # Build a fresh eval env without reward clipping so we see the real score.
-    from atari_preprocessing import make_atari_dqn_env
-    eval_env = make_atari_dqn_env(
+def evaluate(agent: DQNAgent, domain: str, env_id: str, n_episodes: int) -> float:
+    """Run n_episodes with ε=0.05 and return mean total reward."""
+    eval_env = make_dqn_env(
+        domain,
         env_id,
-        episodic_life=False,
         clip_reward=False,
-        noop_max=30,
     )
 
     total_rewards = []
@@ -118,13 +117,17 @@ def train(args: argparse.Namespace) -> None:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Environment
-    env = make_atari_dqn_env(args.env)
-    n_actions = env.action_space.n
-    obs_shape = env.observation_space.shape  # (4, 84, 84)
+    env_id = args.env or ("ALE/Pong-v5" if args.domain == "atari" else "MiniGrid-MemoryS9-v0")
 
-    print(f"Environment : {args.env}")
+    # Environment
+    env = make_dqn_env(args.domain, env_id)
+    n_actions = env.action_space.n
+    obs_shape = env.observation_space.shape
+
+    print(f"Domain      : {args.domain}")
+    print(f"Environment : {env_id}")
     print(f"Actions     : {n_actions}")
+    print(f"Action IDs  : 0..{n_actions - 1}")
     print(f"Obs shape   : {obs_shape}")
 
     # Agent
@@ -225,7 +228,7 @@ def train(args: argparse.Namespace) -> None:
 
         # Periodic evaluation
         if args.eval_freq > 0 and agent.steps_done % args.eval_freq == 0:
-            eval_score = evaluate(agent, args.env, args.eval_episodes)
+            eval_score = evaluate(agent, args.domain, env_id, args.eval_episodes)
             tqdm.write(
                 f"[Eval @ {agent.steps_done:,}]  mean reward = {eval_score:.2f}"
                 f"  (over {args.eval_episodes} episodes)"
@@ -233,7 +236,7 @@ def train(args: argparse.Namespace) -> None:
 
         # Periodic checkpoint
         if agent.steps_done % args.save_freq == 0:
-            ckpt_path = checkpoint_dir / f"dqn_pong_step_{agent.steps_done}.pt"
+            ckpt_path = checkpoint_dir / f"dqn_{args.domain}_step_{agent.steps_done}.pt"
             agent.save(ckpt_path)
             tqdm.write(f"[Saved] {ckpt_path}")
 
@@ -242,7 +245,7 @@ def train(args: argparse.Namespace) -> None:
     csv_file.close()
 
     # Final checkpoint
-    final_path = checkpoint_dir / "dqn_pong_final.pt"
+    final_path = checkpoint_dir / f"dqn_{args.domain}_final.pt"
     agent.save(final_path)
     print(f"\nTraining complete.  Final checkpoint saved to {final_path}")
     print(f"Total time: {(time.time() - t0) / 3600:.2f} h")
