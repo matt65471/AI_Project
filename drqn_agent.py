@@ -43,8 +43,8 @@ class DRQNAgent:
     RMS_ALPHA          = 0.95
     RMS_EPS            = 0.01
 
-    LSTM_HIDDEN_SIZE   = 512
-    SEQ_LEN            = 10
+    LSTM_HIDDEN_SIZE   = 128
+    SEQ_LEN            = 24
 
     def __init__(
         self,

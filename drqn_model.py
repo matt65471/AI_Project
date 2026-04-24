@@ -27,7 +27,7 @@ class DRQNNetwork(nn.Module):
         self,
         n_actions: int,
         frame_stack: int = 4,
-        lstm_hidden_size: int = 512,
+        lstm_hidden_size: int = 128,
     ) -> None:
         super().__init__()
         self.n_actions = n_actions

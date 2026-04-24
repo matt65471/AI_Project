@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--domain",    choices=["atari", "minigrid"], default="minigrid")
     p.add_argument("--agent",     choices=["dqn", "drqn"], default="dqn",
                    help="Feed-forward DQN or recurrent DQN (LSTM).")
-    p.add_argument("--lstm-hidden", type=int, default=512,
+    p.add_argument("--lstm-hidden", type=int, default=128,
                    help="Hidden size of the LSTM (DRQN only).")
     p.add_argument("--env",       default=None,
                    help="Env id; defaults to ALE/Pong-v5 for atari, MiniGrid-MemoryS9-v0 for minigrid")
