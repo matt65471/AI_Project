@@ -5,7 +5,7 @@ import random
 import numpy as np
 from models.light_drqn_model import DRQN
 from buffers.episode_buffer import EpisodeReplayBuffer
-from wrappers.minigrid_wrapper import make_minigrid_env
+from wrappers.light_minigrid_wrapper import make_minigrid_env
 from torch.utils.tensorboard import SummaryWriter
 import os
 
