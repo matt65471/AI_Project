@@ -48,7 +48,7 @@ def train():
     BATCH_SIZE = 32
 
     # Paper uses 1M most recent frames in replay memory
-    REPLAY_SIZE = 1000000
+    REPLAY_SIZE = 200000
 
     # Paper populates buffer with 50k frames before training starts
     LEARNING_STARTS = 50000
@@ -58,7 +58,7 @@ def train():
 
     # Paper trains for 50M frames = 12.5M steps (frame_skip=4)
     # Scaled to 2M for CPU
-    TOTAL_STEPS = 2000000
+    TOTAL_STEPS = 4000000
 
     EPS_START = 1.0
     EPS_END = 0.1
@@ -66,6 +66,7 @@ def train():
     # Paper anneals epsilon over 1M frames = 250k steps (frame_skip=4)
     EPS_DECAY_STEPS = 250000
 
+    SAVE_INTERVAL = 100000
     CHECKPOINT_PATH = f"checkpoints/dqn_pong_nature_seed{SEED}.pth"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -98,6 +99,7 @@ def train():
 
     # Load checkpoint if it exists
     start_step, episode_rewards = load_checkpoint(policy_net, target_net, optimizer, CHECKPOINT_PATH)
+    last_saved_step = start_step
 
     writer = SummaryWriter(log_dir=f"logs/dqn_pong_nature_seed{SEED}", purge_step=start_step)
 
@@ -159,6 +161,13 @@ def train():
         # Target Network Update — every C=10000 steps per paper
         if step % TARGET_UPDATE_FREQ == 0:
             target_net.load_state_dict(policy_net.state_dict())
+        
+        # Save checkpoint every SAVE_INTERVAL steps
+        if (step - last_saved_step) >= SAVE_INTERVAL:
+            save_checkpoint(step, policy_net, target_net, optimizer, episode_rewards, CHECKPOINT_PATH)
+            # Also save the model weights separately
+            torch.save(policy_net.state_dict(), f"dqn_pong_nature_seed{SEED}_model.pth")
+            last_saved_step = step
 
         # Logging & Periodic Saving
         if done or truncated:
@@ -167,16 +176,12 @@ def train():
             episode_rewards.append(episode_reward)
             writer.add_scalar("Charts/Episode_Reward", episode_reward, step)
             writer.add_scalar("Charts/Epsilon", epsilon, step)
+
             if len(episode_rewards) >= 100:
                 mean_100 = np.mean(episode_rewards[-100:])
                 writer.add_scalar("Charts/Mean100_Reward", mean_100, step)
 
-            # Save checkpoint every 5000 steps
-            if step > 0 and step % 5000 < 100:
-                save_checkpoint(step, policy_net, target_net, optimizer, episode_rewards, CHECKPOINT_PATH)
-                torch.save(policy_net.state_dict(), f"dqn_pong_nature_seed{SEED}_model.pth")
-
-            obs, _ = env.reset()
+            obs, _ = env.reset(seed=SEED)
             episode_reward = 0
 
     writer.close()
