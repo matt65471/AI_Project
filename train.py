@@ -25,6 +25,7 @@ from tqdm import tqdm
 
 from atari_preprocessing import make_dqn_env
 from dqn_agent import DQNAgent
+from drqn_agent import DRQNAgent
 
 
 # ---------------------------------------------------------------------------
@@ -34,6 +35,12 @@ from dqn_agent import DQNAgent
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train DQN on Atari Pong or MiniGrid Memory.")
     p.add_argument("--domain",       choices=["atari", "minigrid"], default="minigrid")
+    p.add_argument("--agent",        choices=["dqn", "drqn"], default="dqn",
+                   help="Feed-forward DQN or recurrent DQN (LSTM).")
+    p.add_argument("--lstm-hidden",  type=int, default=512,
+                   help="Hidden size of the LSTM (DRQN only).")
+    p.add_argument("--seq-len",      type=int, default=10,
+                   help="Length of subsequences sampled for DRQN updates.")
     p.add_argument("--env",          default=None,
                    help="Env id; defaults to ALE/Pong-v5 for atari, MiniGrid-MemoryS9-v0 for minigrid")
     p.add_argument("--total-steps",  type=int,   default=1_000_000)
@@ -74,28 +81,43 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def evaluate(agent: DQNAgent, domain: str, env_id: str, n_episodes: int) -> float:
-    """Run n_episodes with ε=0.05 and return mean total reward."""
+def evaluate(agent, domain: str, env_id: str, n_episodes: int) -> float:
+    """Run n_episodes with ε=0.05 and return mean total reward.
+
+    Works for both :class:`DQNAgent` (feed-forward) and :class:`DRQNAgent`
+    (recurrent) - the DRQN case carries its LSTM hidden state between steps
+    via ``agent.select_action`` and resets it each episode.
+    """
     eval_env = make_dqn_env(
         domain,
         env_id,
         clip_reward=False,
     )
 
+    is_recurrent = isinstance(agent, DRQNAgent)
     total_rewards = []
     for _ in range(n_episodes):
         obs, _ = eval_env.reset()
+        agent.reset_hidden()
         ep_reward = 0.0
         done = False
+        import random as _random
         while not done:
-            # Use a fixed low ε for evaluation (common practice).
-            import random as _random
-            if _random.random() < 0.05:
-                action = eval_env.action_space.sample()
-            else:
+            if is_recurrent:
                 with torch.no_grad():
-                    state = torch.from_numpy(obs).unsqueeze(0).to(agent.device)
-                    action = int(agent.online_net(state).argmax(dim=1).item())
+                    state = torch.from_numpy(obs).unsqueeze(0).unsqueeze(0).to(agent.device)
+                    q, agent._hidden = agent.online_net(state, agent._hidden)
+                if _random.random() < 0.05:
+                    action = eval_env.action_space.sample()
+                else:
+                    action = int(q.reshape(-1).argmax().item())
+            else:
+                if _random.random() < 0.05:
+                    action = eval_env.action_space.sample()
+                else:
+                    with torch.no_grad():
+                        state = torch.from_numpy(obs).unsqueeze(0).to(agent.device)
+                        action = int(agent.online_net(state).argmax(dim=1).item())
             obs, reward, terminated, truncated, _ = eval_env.step(action)
             ep_reward += reward
             done = terminated or truncated
@@ -131,7 +153,7 @@ def train(args: argparse.Namespace) -> None:
     print(f"Obs shape   : {obs_shape}")
 
     # Agent
-    agent = DQNAgent(
+    common_kwargs = dict(
         n_actions=n_actions,
         obs_shape=obs_shape,
         device=args.device,
@@ -145,6 +167,15 @@ def train(args: argparse.Namespace) -> None:
         eps_anneal_steps=args.eps_anneal,
         lr=args.lr,
     )
+    if args.agent == "drqn":
+        agent = DRQNAgent(
+            **common_kwargs,
+            lstm_hidden_size=args.lstm_hidden,
+            seq_len=args.seq_len,
+        )
+    else:
+        agent = DQNAgent(**common_kwargs)
+    print(f"Agent       : {args.agent}")
     print(f"Device      : {agent.device}")
 
     if args.resume:
@@ -165,6 +196,7 @@ def train(args: argparse.Namespace) -> None:
     # Training loop
     # -----------------------------------------------------------------------
     obs, _ = env.reset()
+    agent.reset_hidden()
     ep_reward  = 0.0
     ep_length  = 0
     ep_losses: list[float] = []
@@ -222,6 +254,7 @@ def train(args: argparse.Namespace) -> None:
             csv_file.flush()
 
             obs, _ = env.reset()
+            agent.reset_hidden()
             ep_reward = 0.0
             ep_length = 0
             ep_losses = []
@@ -236,7 +269,7 @@ def train(args: argparse.Namespace) -> None:
 
         # Periodic checkpoint
         if agent.steps_done % args.save_freq == 0:
-            ckpt_path = checkpoint_dir / f"dqn_{args.domain}_step_{agent.steps_done}.pt"
+            ckpt_path = checkpoint_dir / f"{args.agent}_{args.domain}_step_{agent.steps_done}.pt"
             agent.save(ckpt_path)
             tqdm.write(f"[Saved] {ckpt_path}")
 
@@ -245,7 +278,7 @@ def train(args: argparse.Namespace) -> None:
     csv_file.close()
 
     # Final checkpoint
-    final_path = checkpoint_dir / f"dqn_{args.domain}_final.pt"
+    final_path = checkpoint_dir / f"{args.agent}_{args.domain}_final.pt"
     agent.save(final_path)
     print(f"\nTraining complete.  Final checkpoint saved to {final_path}")
     print(f"Total time: {(time.time() - t0) / 3600:.2f} h")

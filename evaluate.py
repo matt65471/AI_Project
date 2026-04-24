@@ -22,6 +22,7 @@ import torch
 
 from atari_preprocessing import make_dqn_env
 from dqn_agent import DQNAgent
+from drqn_agent import DRQNAgent
 
 
 # ---------------------------------------------------------------------------
@@ -33,6 +34,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint", default=None,
                    help="Path to a .pt checkpoint file.")
     p.add_argument("--domain",    choices=["atari", "minigrid"], default="minigrid")
+    p.add_argument("--agent",     choices=["dqn", "drqn"], default="dqn",
+                   help="Feed-forward DQN or recurrent DQN (LSTM).")
+    p.add_argument("--lstm-hidden", type=int, default=512,
+                   help="Hidden size of the LSTM (DRQN only).")
     p.add_argument("--env",       default=None,
                    help="Env id; defaults to ALE/Pong-v5 for atari, MiniGrid-MemoryS9-v0 for minigrid")
     p.add_argument("--episodes",  type=int, default=10,
@@ -59,7 +64,7 @@ def set_seed(seed: int) -> None:
 # ---------------------------------------------------------------------------
 
 def run_episodes(
-    agent: DQNAgent,
+    agent,
     domain: str,
     env_id: str,
     n_episodes: int,
@@ -75,19 +80,31 @@ def run_episodes(
         clip_reward=False,
     )
 
+    is_recurrent = isinstance(agent, DRQNAgent)
+
     rewards = []
     for ep in range(1, n_episodes + 1):
         obs, _ = env.reset()
+        agent.reset_hidden()
         ep_reward = 0.0
         done = False
         step = 0
         while not done:
-            if random.random() < epsilon:
-                action = env.action_space.sample()
-            else:
+            if is_recurrent:
                 with torch.no_grad():
-                    state = torch.from_numpy(obs).unsqueeze(0).to(agent.device)
-                    action = int(agent.online_net(state).argmax(dim=1).item())
+                    state = torch.from_numpy(obs).unsqueeze(0).unsqueeze(0).to(agent.device)
+                    q, agent._hidden = agent.online_net(state, agent._hidden)
+                if random.random() < epsilon:
+                    action = env.action_space.sample()
+                else:
+                    action = int(q.reshape(-1).argmax().item())
+            else:
+                if random.random() < epsilon:
+                    action = env.action_space.sample()
+                else:
+                    with torch.no_grad():
+                        state = torch.from_numpy(obs).unsqueeze(0).to(agent.device)
+                        action = int(agent.online_net(state).argmax(dim=1).item())
 
             obs, reward, terminated, truncated, _ = env.step(action)
             ep_reward += float(reward)
@@ -178,11 +195,20 @@ def main() -> None:
     obs_shape = tmp_env.observation_space.shape
     tmp_env.close()
 
-    agent = DQNAgent(n_actions=n_actions, obs_shape=obs_shape, device=args.device)
+    if args.agent == "drqn":
+        agent = DRQNAgent(
+            n_actions=n_actions,
+            obs_shape=obs_shape,
+            device=args.device,
+            lstm_hidden_size=args.lstm_hidden,
+        )
+    else:
+        agent = DQNAgent(n_actions=n_actions, obs_shape=obs_shape, device=args.device)
     agent.load(args.checkpoint)
     agent.online_net.eval()
 
     print(f"Loaded checkpoint: {args.checkpoint}")
+    print(f"Agent            : {args.agent}")
     print(f"Domain           : {args.domain}")
     print(f"Environment      : {env_id}")
     print(f"Steps trained    : {agent.steps_done:,}")

@@ -202,6 +202,10 @@ class DQNAgent:
     # Utilities
     # ------------------------------------------------------------------
 
+    def reset_hidden(self) -> None:
+        """No-op for the feed-forward DQN; present for interface parity with DRQN."""
+        return None
+
     def current_epsilon(self) -> float:
         return max(
             self.eps_end,
