@@ -2,7 +2,7 @@ import torch
 import numpy as np
 from gymnasium.wrappers import RecordVideo
 from wrappers.minigrid_wrapper import make_minigrid_env
-from dqn_model import NatureDQN
+from models.dqn_model import NatureDQN
 
 def play(checkpoint_path="dqn_minigrid_seed42_model.pth", episodes=5):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -3,9 +3,9 @@ import torch.nn as nn
 import torch.optim as optim
 import random
 import numpy as np
-from collections import deque
+from models.drqn_model import DRQN
+from buffers.episode_buffer import EpisodeReplayBuffer
 from wrappers.minigrid_wrapper import make_minigrid_env
-from models.dqn_model import NatureDQN
 from torch.utils.tensorboard import SummaryWriter
 import os
 
@@ -33,41 +33,38 @@ def load_checkpoint(policy_net, target_net, optimizer, checkpoint_path):
     return ckpt["step"], ckpt["episode_rewards"]
 
 def train():
-    # Hyperparameters
+    # DRQN Hyperparameters for MiniGrid MemoryEnv
     ENV_NAME = "MiniGrid-MemoryS7-v0"
-    SEED = 32
+    SEED = 42
 
-    # Same LR as paper
     LR = 0.00025
-
-    # Discount factor — paper sets γ = 0.99 throughout
     GAMMA = 0.99
-
-    # Minibatch size from paper
     BATCH_SIZE = 32
 
-    # Reduced from paper's 1M
-    REPLAY_SIZE = 100000
+    # Number of episodes in replay buffer
+    REPLAY_EPISODES = 500
 
-    # Start learning after 10k steps 
-    LEARNING_STARTS = 10000
+    # Sequence length for LSTM training
+    SEQUENCE_LENGTH = 8
 
-    # Target network update frequency — reduced from 10k for faster MiniGrid episodes
+    # LSTM hidden size
+    HIDDEN_SIZE = 512
+
+    # Start training after 10 episodes
+    MIN_EPISODES_TO_TRAIN = 10
+
+    # Target network update frequency
     TARGET_UPDATE_FREQ = 1000
 
-    # MiniGrid needs fewer steps than Atari to show the failure mode
     TOTAL_STEPS = 500000
-
     EPS_START = 1.0
     EPS_END = 0.1
-
-    # Anneal epsilon over first 250k steps
     EPS_DECAY_STEPS = 250000
 
-    CHECKPOINT_PATH = f"checkpoints/dqn_minigrid_seed{SEED}_checkpoint.pth"
+    CHECKPOINT_PATH = f"checkpoints/drqn_minigrid_seed{SEED}_checkpoint.pth"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Training on: {device} | Seed: {SEED}")
+    print(f"Training DRQN on: {device} | Seed: {SEED}")
 
     random.seed(SEED)
     np.random.seed(SEED)
@@ -78,12 +75,13 @@ def train():
     env = make_minigrid_env(ENV_NAME)
     env.action_space.seed(SEED)
 
-    policy_net = NatureDQN(env.action_space.n).to(device)
-    target_net = NatureDQN(env.action_space.n).to(device)
+    # DRQN instead of NatureDQN — this is the required algorithmic change
+    policy_net = DRQN(env.action_space.n, hidden_size=HIDDEN_SIZE, sequence_length=SEQUENCE_LENGTH).to(device)
+    target_net = DRQN(env.action_space.n, hidden_size=HIDDEN_SIZE, sequence_length=SEQUENCE_LENGTH).to(device)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()  # Target net is never trained directly
 
-    # RMSProp with same paper hyperparameters as Pong
+    # RMSProp — same as paper
     optimizer = optim.RMSprop(
         policy_net.parameters(),
         lr=LR,
@@ -93,71 +91,83 @@ def train():
         centered=True
     )
 
-    memory = deque(maxlen=REPLAY_SIZE)
+    # Episode-based replay buffer — required for DRQN
+    memory = EpisodeReplayBuffer(
+        capacity=REPLAY_EPISODES,
+        sequence_length=SEQUENCE_LENGTH
+    )
 
     # Load checkpoint if it exists
     start_step, episode_rewards = load_checkpoint(policy_net, target_net, optimizer, CHECKPOINT_PATH)
 
-    writer = SummaryWriter(log_dir=f"logs/dqn_minigrid_seed{SEED}", purge_step=start_step)
+    writer = SummaryWriter(log_dir=f"logs/drqn_minigrid_seed{SEED}", purge_step=start_step)
 
     obs, _ = env.reset()
     episode_reward = 0
 
+    # LSTM hidden state — reset at each episode start
+    hidden = policy_net.init_hidden(batch_size=1, device=device)
+
     for step in range(start_step, TOTAL_STEPS):
         # Choose Action (Epsilon-Greedy Policy)
-        # Anneal ε linearly from 1.0 to 0.1 over 250k steps
         epsilon = max(EPS_END, EPS_START - (step / EPS_DECAY_STEPS) * (EPS_START - EPS_END))
 
         if random.random() < epsilon:
             action = env.action_space.sample()
         else:
+            # Pass hidden state so LSTM remembers across steps
             state_t = torch.tensor(np.array(obs), dtype=torch.uint8).unsqueeze(0).to(device)
             with torch.no_grad():
-                action = policy_net(state_t).argmax().item()
+                q_values, hidden = policy_net(state_t, hidden)
+                action = q_values.argmax().item()
 
         # Step in Environment
         next_obs, reward, done, truncated, _ = env.step(action)
 
-        # Store transition — MiniGrid rewards are already in (0, 1) so no clipping needed
-        memory.append((obs, action, reward, next_obs, done or truncated))
+        # Store transition in episode buffer
+        memory.push_transition(obs, action, reward, next_obs, done or truncated)
         obs = next_obs
-        episode_reward += reward  # Track real reward for logging
+        episode_reward += reward
 
-        # Optimize every 4 steps — same as paper
-        if len(memory) > LEARNING_STARTS:
-            if step % 4 == 0:  # Only optimize every 4 steps to save time
-                batch = random.sample(memory, BATCH_SIZE)
-                states, actions, rewards, next_states, dones = zip(*batch)
+        # Optimize every 4 steps once buffer has enough episodes
+        if memory.ready(MIN_EPISODES_TO_TRAIN) and step % 4 == 0:
+            # Sample sequences — not random transitions
+            states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
 
-                # Cast to uint8 — NatureDQN normalizes internally
-                states      = torch.tensor(np.array(states),      dtype=torch.uint8).to(device)
-                actions     = torch.tensor(actions).unsqueeze(1).to(device)
-                rewards     = torch.tensor(rewards, dtype=torch.float32).to(device)
-                next_states = torch.tensor(np.array(next_states), dtype=torch.uint8).to(device)
-                dones       = torch.tensor(dones, dtype=torch.float32).to(device)
+            # Convert to tensors — shape (batch, seq, 4, 84, 84)
+            states      = torch.tensor(states,      dtype=torch.uint8).to(device)
+            next_states = torch.tensor(next_states, dtype=torch.uint8).to(device)
+            actions     = torch.tensor(actions,     dtype=torch.long).to(device)
+            rewards     = torch.tensor(rewards,     dtype=torch.float32).to(device)
+            dones       = torch.tensor(dones,       dtype=torch.float32).to(device)
 
-                # Current Q values
-                current_q = policy_net(states).gather(1, actions).squeeze()
+            # Current Q values — LSTM processes full sequence
+            q_values, _ = policy_net(states)
 
-                # Target Q values (Bellman Equation)
-                with torch.no_grad():
-                    max_next_q = target_net(next_states).max(1)[0]
-                    target_q = rewards + GAMMA * max_next_q * (1 - dones)
+            # Only use the last action in the sequence for loss
+            actions_last = actions[:, -1].unsqueeze(1)
+            current_q = q_values.gather(1, actions_last).squeeze(1)
 
-                # Huber loss — clips error to [-1, 1] per paper
-                loss = nn.SmoothL1Loss()(current_q, target_q)
+            # Target Q values
+            with torch.no_grad():
+                next_q_values, _ = target_net(next_states)
+                max_next_q = next_q_values.max(1)[0]
+                target_q = rewards[:, -1] + GAMMA * max_next_q * (1 - dones[:, -1])
 
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+            # Huber loss — clips error to [-1, 1] per paper
+            loss = nn.SmoothL1Loss()(current_q, target_q)
 
-                writer.add_scalar("Losses/TD_Loss", loss.item(), step)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            writer.add_scalar("Losses/TD_Loss", loss.item(), step)
 
         # Update Target Network
         if step % TARGET_UPDATE_FREQ == 0:
             target_net.load_state_dict(policy_net.state_dict())
 
-        # Logging & Periodic Saving
+        # Reset hidden state and log at episode end
         if done or truncated:
             print(f"Step: {step} | Reward: {episode_reward} | Epsilon: {epsilon:.3f}")
 
@@ -171,10 +181,12 @@ def train():
             # Save checkpoint every 5000 steps
             if step > 0 and step % 5000 < 100:
                 save_checkpoint(step, policy_net, target_net, optimizer, episode_rewards, CHECKPOINT_PATH)
-                torch.save(policy_net.state_dict(), f"dqn_minigrid_seed{SEED}_model.pth")
+                torch.save(policy_net.state_dict(), f"drqn_minigrid_seed{SEED}_model.pth")
 
+            # Reset environment and LSTM hidden state for new episode
             obs, _ = env.reset()
             episode_reward = 0
+            hidden = policy_net.init_hidden(batch_size=1, device=device)  # ← key difference from DQN
 
     writer.close()
 

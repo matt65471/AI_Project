@@ -5,7 +5,7 @@ import numpy as np
 import time
 from gymnasium.wrappers import RecordVideo
 from wrappers.atari_wrapper import make_atari_env
-from dqn_model import NatureDQN
+from models.dqn_model import NatureDQN
 
 gym.register_envs(ale_py)
 

@@ -6,7 +6,7 @@ import random
 import numpy as np
 from collections import deque
 from wrappers.atari_wrapper import make_atari_env
-from dqn_model import NatureDQN
+from models.dqn_model import NatureDQN
 from torch.utils.tensorboard import SummaryWriter
 import os
 
