@@ -39,19 +39,19 @@ def train():
     SEED = 42
 
     # Slightly higher LR for faster convergence on CPU
-    LR = 0.0003
+    LR = 0.0001
 
     # Discount factor
     GAMMA = 0.99
 
     # Reduced batch size for CPU speed
-    BATCH_SIZE = 16
+    BATCH_SIZE = 32
 
     # Number of episodes in replay buffer
     REPLAY_EPISODES = 200
 
     # Shorter sequences = faster LSTM on CPU
-    SEQUENCE_LENGTH = 4
+    SEQUENCE_LENGTH = 64
 
     # Smaller LSTM = faster CPU training
     HIDDEN_SIZE = 128
@@ -60,17 +60,17 @@ def train():
     MIN_EPISODES_TO_TRAIN = 50
 
     # Target network update frequency
-    TARGET_UPDATE_FREQ = 1000
+    TARGET_UPDATE_FREQ = 5000
 
-    TOTAL_STEPS = 500000
+    TOTAL_STEPS = 2000000
     EPS_START = 1.0
     EPS_END = 0.1
 
     # Faster decay for faster learning signal
-    EPS_DECAY_STEPS = 150000
+    EPS_DECAY_STEPS = 300000
 
-    # Update every 16 steps instead of 4 — biggest CPU speed gain
-    UPDATE_EVERY = 16
+    # Update every 8 steps instead of 4 — biggest CPU speed gain
+    UPDATE_EVERY = 8
 
     CHECKPOINT_PATH = f"checkpoints/drqn_light_seed{SEED}.pth"
 
@@ -173,6 +173,7 @@ def train():
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(policy_net.parameters(), max_norm=1.0)
             optimizer.step()
 
             writer.add_scalar("Losses/TD_Loss", loss.item(), step)
