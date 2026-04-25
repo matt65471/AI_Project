@@ -61,10 +61,10 @@ class EpisodeReplayBuffer:
             batch_dones.append(np.array(dones))
 
         return (
-            np.array(batch_obs),       # (batch, seq, 4, 84, 84)
+            np.array(batch_obs),       # (batch, seq, C, H, W) — shape depends on wrapper
             np.array(batch_actions),   # (batch, seq)
             np.array(batch_rewards),   # (batch, seq)
-            np.array(batch_next_obs),  # (batch, seq, 4, 84, 84)
+            np.array(batch_next_obs),  # (batch, seq, C, H, W) — shape depends on wrapper
             np.array(batch_dones)      # (batch, seq)
         )
 

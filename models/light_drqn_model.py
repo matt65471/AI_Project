@@ -1,67 +1,77 @@
 import torch
 import torch.nn as nn
 
+
 class DRQN(nn.Module):
     """
     Optimized DRQN for CPU.
-    - Uses a smaller CNN for 7x7 MiniGrid inputs.
-    - Reduces hidden_size to lower the computational load on the CPU.
+    - Uses symbolic MiniGrid observations instead of pixels
+    - Smaller CNN for faster CPU training
+    - LSTM for explicit memory across timesteps
     """
-
-    def __init__(self, n_actions, hidden_size=128, sequence_length=8):
+    def __init__(self, n_actions, hidden_size=128, sequence_length=8, obs_shape=(3, 7, 7)):
         super(DRQN, self).__init__()
         self.n_actions = n_actions
         self.hidden_size = hidden_size
         self.sequence_length = sequence_length
 
-        # MiniGrid inputs are typically (3, 7, 7)
-        # We use a compact CNN that a CPU can process instantly
+        c, h, w = obs_shape
+
+        # Compact CNN for small symbolic grid
         self.conv = nn.Sequential(
-            nn.Conv2d(3, 16, kernel_size=2, stride=1),
+            nn.Conv2d(c, 16, kernel_size=2, stride=1),
             nn.ReLU(),
             nn.Conv2d(16, 32, kernel_size=2, stride=1),
             nn.ReLU(),
             nn.Flatten()
         )
 
-        # For a 7x7 input, two 2x2 convs (stride 1) leave a 5x5 feature map.
-        # 32 channels * 5 * 5 = 800
-        self.conv_out_size = 800
+        # Calculate conv output size dynamically
+        dummy = torch.zeros(1, c, h, w)
+        self.conv_out_size = self.conv(dummy).shape[1]
+        print(f"Conv output size: {self.conv_out_size}")
 
+        # LSTM — memory mechanism
         self.lstm = nn.LSTM(
             input_size=self.conv_out_size,
             hidden_size=hidden_size,
             batch_first=True
         )
 
+        # Q-value head
         self.fc = nn.Linear(hidden_size, n_actions)
 
     def forward(self, x, hidden=None):
-        # Handle input: (Batch, Seq, C, H, W) or (Batch, C, H, W)
+        """
+        x: (batch, seq, C, H, W) or (batch, C, H, W)
+        hidden: LSTM hidden state
+        """
+        # Add sequence dimension if single step
         if x.dim() == 4:
             x = x.unsqueeze(1)
 
-        batch_size, seq_len, channels, h, w = x.shape
+        batch_size, seq_len, c, h, w = x.shape
 
-        # Normalize pixel values to [0, 1]
+        # Normalize
         x = x.float() / 255.0
 
-        # Collapse batch and seq for the CNN
-        x = x.reshape(batch_size * seq_len, channels, h, w)
+        # Run CNN on each frame
+        x = x.reshape(batch_size * seq_len, c, h, w)
         x = self.conv(x)
-        
-        # Reshape back for LSTM: (Batch, Seq, Features)
+
+        # Reshape for LSTM
         x = x.view(batch_size, seq_len, self.conv_out_size)
 
-        # LSTM step
+        # LSTM — carries memory across timesteps
         x, hidden = self.lstm(x, hidden)
 
-        # Only take the Q-values for the final step in the sequence
+        # Q-values from last timestep only
         x = self.fc(x[:, -1, :])
 
         return x, hidden
 
     def init_hidden(self, batch_size=1, device='cpu'):
+        """Reset hidden state at episode start."""
         h = torch.zeros(1, batch_size, self.hidden_size).to(device)
         c = torch.zeros(1, batch_size, self.hidden_size).to(device)
         return (h, c)
