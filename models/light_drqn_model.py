@@ -19,9 +19,11 @@ class DRQN(nn.Module):
 
         # Compact CNN for small symbolic grid
         self.conv = nn.Sequential(
-            nn.Conv2d(c, 16, kernel_size=2, stride=1),
+            nn.Conv2d(c, 16, kernel_size=2, stride=1),  # layer 1
             nn.ReLU(),
-            nn.Conv2d(16, 32, kernel_size=2, stride=1),
+            nn.Conv2d(16, 32, kernel_size=2, stride=1),  # layer 2
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=2, stride=1),  # layer 3
             nn.ReLU(),
             nn.Flatten()
         )

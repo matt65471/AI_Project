@@ -26,7 +26,8 @@ class EpisodeReplayBuffer:
 
         # Episode is done — store it and start a new one
         if done:
-            self.buffer.append(list(self.current_episode))
+            if len(self.current_episode) >= self.sequence_length:
+                self.buffer.append(list(self.current_episode))
             self.current_episode = []
 
     def sample(self, batch_size):

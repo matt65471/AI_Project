@@ -51,13 +51,13 @@ def train():
     REPLAY_EPISODES = 200
 
     # Shorter sequences = faster LSTM on CPU
-    SEQUENCE_LENGTH = 64
+    SEQUENCE_LENGTH = 16
 
     # Smaller LSTM = faster CPU training
     HIDDEN_SIZE = 128
 
-    # Start training after 50 episodes
-    MIN_EPISODES_TO_TRAIN = 50
+    # Start training after 100 episodes
+    MIN_EPISODES_TO_TRAIN = 100
 
     # Target network update frequency
     TARGET_UPDATE_FREQ = 5000
@@ -134,6 +134,7 @@ def train():
             with torch.inference_mode():
                 q_values, hidden = policy_net(state_t, hidden)
                 action = q_values.argmax().item()
+            hidden = (hidden[0].detach(), hidden[1].detach())
 
         # Step in Environment
         next_obs, reward, done, truncated, _ = env.step(action)
@@ -143,7 +144,7 @@ def train():
         obs = next_obs
         episode_reward += reward
 
-        # Optimize every 16 steps once buffer has enough episodes
+        # Optimize every x steps once buffer has enough episodes
         if memory.ready(MIN_EPISODES_TO_TRAIN) and step % UPDATE_EVERY == 0:
             # Sample sequences — not random transitions
             states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
@@ -156,7 +157,8 @@ def train():
             dones       = torch.from_numpy(dones).float().to(device)
 
             # Current Q values — LSTM processes full sequence
-            q_values, _ = policy_net(states)
+            train_hidden = policy_net.init_hidden(batch_size=BATCH_SIZE, device=device)
+            q_values, _ = policy_net(states, train_hidden)
 
             # Only use last action in sequence for loss
             actions_last = actions[:, -1].unsqueeze(1)
@@ -164,7 +166,8 @@ def train():
 
             # Target Q values (Bellman Equation)
             with torch.no_grad():
-                next_q_values, _ = target_net(next_states)
+                target_hidden = target_net.init_hidden(batch_size=BATCH_SIZE, device=device)
+                next_q_values, _ = target_net(next_states, target_hidden)
                 max_next_q = next_q_values.max(1)[0]
                 target_q = rewards[:, -1] + GAMMA * max_next_q * (1 - dones[:, -1])
 
@@ -201,7 +204,7 @@ def train():
             # Reset environment and LSTM hidden state for new episode
             obs, _ = env.reset()
             episode_reward = 0
-            hidden = policy_net.init_hidden(batch_size=1, device=device)  # ← key difference from DQN
+            hidden = policy_net.init_hidden(batch_size=1, device=device)
 
     writer.close()
 
