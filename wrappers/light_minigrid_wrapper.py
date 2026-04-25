@@ -31,7 +31,9 @@ class MiniGridLightWrapper(gym.ObservationWrapper):
     def observation(self, obs):
         # obs['image'] is (H, W, 3) → transpose to (3, H, W)
         image = obs["image"]
-        return np.transpose(image, (2, 0, 1)).astype(np.uint8)
+        transposed = np.transpose(image, (2, 0, 1)).astype(np.float32)
+        scaled = (transposed * (255 / 6)).clip(0, 255).astype(np.uint8)
+        return scaled
 
 
 def make_minigrid_env(env_id="MiniGrid-MemoryS7-v0", render_mode=None):
