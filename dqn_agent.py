@@ -179,7 +179,9 @@ class DQNAgent:
 
         # Target Q-values (no gradient through target network).
         with torch.no_grad():
-            next_q = self.target_net(next_obs).max(dim=1).values
+            # Double DQN: action chosen by ONLINE net, value read from TARGET net.
+            next_actions = self.online_net(next_obs).argmax(dim=1)
+            next_q = self.target_net(next_obs).gather(1, next_actions.unsqueeze(1)).squeeze(1)
             # Terminal states have no future reward.
             targets = rewards + self.gamma * next_q * (~dones)
 

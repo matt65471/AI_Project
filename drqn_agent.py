@@ -161,8 +161,10 @@ class DRQNAgent:
         q_values = q_all.gather(2, actions.unsqueeze(-1)).squeeze(-1)
 
         with torch.no_grad():
+            # Double DQN: pick action with online net, evaluate it with target net.
+            next_actions = self.online_net(next_obs)[0].argmax(dim=2)
             next_q_all, _ = self.target_net(next_obs)
-            next_q = next_q_all.max(dim=2).values
+            next_q = next_q_all.gather(2, next_actions.unsqueeze(-1)).squeeze(-1)
             targets = rewards + self.gamma * next_q * (~dones)
 
         elementwise = nn.functional.smooth_l1_loss(
