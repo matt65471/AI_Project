@@ -1,8 +1,28 @@
-gymnasium[atari]
-AutoROM[accept-rom-license]
-minigrid
+# Core
 torch
+torchvision
 numpy
-matplotlib
+
+# Atari
+ale-py
+gymnasium
+gymnasium[atari]
+autorom
+
+# MiniGrid
+minigrid
+
+# Image Processing
 opencv-python
-tqdm
+
+# Logging
+tensorboard
+
+# Visualization
+matplotlib
+
+# Game Rendering
+pygame
+
+# Other
+shimmy
