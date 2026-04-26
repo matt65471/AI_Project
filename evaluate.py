@@ -112,7 +112,7 @@ def run_episodes(
             step += 1
 
         rewards.append(ep_reward)
-        print(f"  Episode {ep:3d}: reward = {ep_reward:+.0f}  ({step} steps)")
+        print(f"  Episode {ep:3d}: reward = {ep_reward:+.3f}  ({step} steps)")
 
     env.close()
     return rewards
@@ -222,8 +222,8 @@ def main() -> None:
     print(f"\nResults over {len(rewards)} episodes:")
     print(f"  Mean   : {np.mean(rewards):+.2f}")
     print(f"  Std    : {np.std(rewards):.2f}")
-    print(f"  Min    : {np.min(rewards):+.0f}")
-    print(f"  Max    : {np.max(rewards):+.0f}")
+    print(f"  Min    : {np.min(rewards):+.3f}")
+    print(f"  Max    : {np.max(rewards):+.3f}")
 
 
 if __name__ == "__main__":
