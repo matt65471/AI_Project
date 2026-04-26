@@ -36,7 +36,7 @@ def load_checkpoint(policy_net, target_net, optimizer, checkpoint_path):
 def train():
     # DRQN Hyperparameters for MiniGrid MemoryEnv (Light CPU version)
     ENV_NAME = "MiniGrid-MemoryS7-v0"
-    SEED = 40
+    SEED = 51
 
     # Slightly higher LR for faster convergence on CPU
     LR = 0.00005
@@ -67,7 +67,7 @@ def train():
     EPS_END = 0.05
 
     # Faster decay for faster learning signal
-    EPS_DECAY_STEPS = 100000
+    EPS_DECAY_STEPS = 400000
 
     # Update every 8 steps instead of 4 — biggest CPU speed gain
     UPDATE_EVERY = 8
@@ -142,11 +142,11 @@ def train():
         with torch.inference_mode():
                 q_values, hidden = policy_net(state_t, hidden)
                 action = q_values.argmax().item()
+                
+        hidden = (hidden[0].detach(), hidden[1].detach())
 
         if random.random() < epsilon:
             action = env.action_space.sample()
-        else:
-            hidden = (hidden[0].detach(), hidden[1].detach())
 
             if step % 1000 == 0:
                 print(f"Q-values: {q_values.numpy()} | Action: {action}")
@@ -154,16 +154,16 @@ def train():
         # Step in Environment
         next_obs, reward, done, truncated, _ = env.step(action)
 
+        terminal = done and not truncated
+
         shaped_reward = reward
         if truncated and reward == 0:
-            shaped_reward = -0.5
-        elif done and reward == 0:
-            shaped_reward = -1.0
-        elif reward > 0:
-            shaped_reward = 1.0
+            shaped_reward = -0.1
+        elif terminal and reward == 0:
+            shaped_reward = -0.1
 
         # Store transition in episode buffer
-        memory.push_transition(obs, action, shaped_reward, next_obs, done or truncated)
+        memory.push_transition(obs, action, shaped_reward, next_obs, done or truncated, terminal)
 
         obs = next_obs
         shaped_episode_reward += shaped_reward
@@ -173,7 +173,7 @@ def train():
         # Optimize every x steps once buffer has enough episodes
         if memory.ready(MIN_EPISODES_TO_TRAIN) and step % UPDATE_EVERY == 0:
             # Sample sequences — not random transitions
-            states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
+            states, actions, rewards, next_states, dones, terminals = memory.sample(BATCH_SIZE)
 
             # Fast conversion
             states      = torch.from_numpy(states).to(device)
@@ -181,6 +181,7 @@ def train():
             actions     = torch.from_numpy(actions).long().to(device)
             rewards     = torch.from_numpy(rewards).float().to(device)
             dones       = torch.from_numpy(dones).float().to(device)
+            terminals   = torch.from_numpy(terminals).float().to(device)
 
             # Current Q values — LSTM processes full sequence
             train_hidden = policy_net.init_hidden(batch_size=BATCH_SIZE, device=device)
@@ -193,9 +194,11 @@ def train():
             # Target Q values (Bellman Equation)
             with torch.no_grad():
                 target_hidden = target_net.init_hidden(batch_size=BATCH_SIZE, device=device)
-                next_q_values, _ = target_net(next_states, target_hidden)
+                burn_len = SEQUENCE_LENGTH // 2
+                _, target_hidden = target_net(next_states[:, :burn_len], target_hidden)
+                next_q_values, _ = target_net(next_states[:, burn_len:], target_hidden)
                 max_next_q = next_q_values.max(1)[0]
-                target_q = rewards[:, -1] + GAMMA * max_next_q * (1 - dones[:, -1])
+                target_q = rewards[:, -1] + GAMMA * max_next_q * (1 - terminals[:, -1])
 
             # Huber loss — clips error to [-1, 1] per paper
             loss = nn.SmoothL1Loss()(current_q, target_q)

@@ -22,9 +22,9 @@ class EpisodeReplayBuffer:
         self.current_episode = []
         self.episode_reward = 0
 
-    def push_transition(self, obs, action, reward, next_obs, done):
+    def push_transition(self, obs, action, reward, next_obs, done, terminal):
         """Add a single transition to the current episode."""
-        self.current_episode.append((obs, action, reward, next_obs, done))
+        self.current_episode.append((obs, action, reward, next_obs, done, terminal))
         self.episode_reward += reward
 
         # Episode is done — store it and start a new one
@@ -43,7 +43,6 @@ class EpisodeReplayBuffer:
         """
         sequences = []
         success_count = min(batch_size // 2, len(self.success_buffer))
-        regular_count = batch_size - success_count
 
         # Sample from success buffer
         while len(sequences) < success_count:
@@ -71,22 +70,24 @@ class EpisodeReplayBuffer:
             sequences.append(seq)
 
         # Unzip into separate arrays
-        batch_obs, batch_actions, batch_rewards, batch_next_obs, batch_dones = [], [], [], [], []
+        batch_obs, batch_actions, batch_rewards, batch_next_obs, batch_dones, batch_terminals = [], [], [], [], [], []
 
         for seq in sequences:
-            obs, actions, rewards, next_obs, dones = zip(*seq)
+            obs, actions, rewards, next_obs, dones, terminals = zip(*seq)
             batch_obs.append(np.array(obs))
             batch_actions.append(np.array(actions))
             batch_rewards.append(np.array(rewards))
             batch_next_obs.append(np.array(next_obs))
             batch_dones.append(np.array(dones))
+            batch_terminals.append(np.array(terminals))
 
         return (
             np.array(batch_obs),       # (batch, seq, C, H, W) — shape depends on wrapper
             np.array(batch_actions),   # (batch, seq)
             np.array(batch_rewards),   # (batch, seq)
             np.array(batch_next_obs),  # (batch, seq, C, H, W) — shape depends on wrapper
-            np.array(batch_dones)      # (batch, seq)
+            np.array(batch_dones),     # (batch, seq)
+            np.array(batch_terminals)
         )
 
     def __len__(self):
