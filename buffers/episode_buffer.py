@@ -18,17 +18,23 @@ class EpisodeReplayBuffer:
         self.capacity = capacity
         self.sequence_length = sequence_length
         self.buffer = deque(maxlen=capacity)
+        self.success_buffer = deque(maxlen=capacity // 2)
         self.current_episode = []
+        self.episode_reward = 0
 
     def push_transition(self, obs, action, reward, next_obs, done):
         """Add a single transition to the current episode."""
         self.current_episode.append((obs, action, reward, next_obs, done))
+        self.episode_reward += reward
 
         # Episode is done — store it and start a new one
         if done:
             if len(self.current_episode) >= self.sequence_length:
+                if self.episode_reward > 0:
+                    self.success_buffer.append(list(self.current_episode))
                 self.buffer.append(list(self.current_episode))
             self.current_episode = []
+            self.episode_reward = 0
 
     def sample(self, batch_size):
         """
@@ -36,7 +42,21 @@ class EpisodeReplayBuffer:
         Each sequence comes from a random point in a random episode.
         """
         sequences = []
+        success_count = min(batch_size // 2, len(self.success_buffer))
+        regular_count = batch_size - success_count
 
+        # Sample from success buffer
+        while len(sequences) < success_count:
+            if len(self.success_buffer) == 0:
+                break
+            episode = random.choice(self.success_buffer)
+            if len(episode) < self.sequence_length:
+                continue
+            start = random.randint(0, len(episode) - self.sequence_length)
+            seq = episode[start:start + self.sequence_length]
+            sequences.append(seq)
+
+        # Sample from regular buffer
         while len(sequences) < batch_size:
             # Pick a random episode
             episode = random.choice(self.buffer)

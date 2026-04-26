@@ -31,7 +31,9 @@ class MiniGridLightWrapper(gym.ObservationWrapper):
     def observation(self, obs):
         # obs['image'] is (H, W, 3) → transpose to (3, H, W)
         image = obs["image"]
-        return np.transpose(image, (2, 0, 1)).astype(np.uint8)
+        transposed = np.transpose(image, (2, 0, 1)).astype(np.float32)
+        scaled = (transposed * (255 / 6)).clip(0, 255).astype(np.uint8)
+        return scaled
 
 
 def make_minigrid_env(env_id="MiniGrid-MemoryS7-v0", render_mode=None):
@@ -39,6 +41,6 @@ def make_minigrid_env(env_id="MiniGrid-MemoryS7-v0", render_mode=None):
     Returns a lightweight environment for CPU training.
     Uses symbolic observations instead of rendered pixels.
     """
-    env = gym.make(env_id, render_mode=render_mode)
+    env = gym.make(env_id, render_mode=render_mode, max_episode_steps=50)
     env = MiniGridLightWrapper(env)
     return env
