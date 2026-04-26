@@ -46,6 +46,12 @@ class DRQNAgent:
     LSTM_HIDDEN_SIZE   = 128
     SEQ_LEN            = 16
 
+    # Prioritized Experience Replay defaults (Schaul et al. 2016).
+    PER_ALPHA          = 0.6   # how strongly priorities bias sampling
+    PER_BETA_START     = 0.4   # IS-weight exponent at start of training
+    PER_BETA_END       = 1.0   # IS-weight exponent fully on by end of anneal
+    PER_BETA_ANNEAL    = 1_000_000  # env steps over which beta anneals
+
     def __init__(
         self,
         n_actions: int,
@@ -63,6 +69,11 @@ class DRQNAgent:
         lr: float | None = None,
         lstm_hidden_size: int | None = None,
         seq_len: int | None = None,
+        prioritized: bool = False,
+        per_alpha: float | None = None,
+        per_beta_start: float | None = None,
+        per_beta_end: float | None = None,
+        per_beta_anneal: int | None = None,
     ) -> None:
         self.n_actions = n_actions
         self.obs_shape = obs_shape
@@ -78,6 +89,12 @@ class DRQNAgent:
         self.lr                 = lr                 or self.LR
         self.lstm_hidden_size   = lstm_hidden_size   or self.LSTM_HIDDEN_SIZE
         self.seq_len            = seq_len            or self.SEQ_LEN
+
+        self.prioritized        = prioritized
+        self.per_alpha          = per_alpha          if per_alpha is not None else self.PER_ALPHA
+        self.per_beta_start     = per_beta_start     if per_beta_start is not None else self.PER_BETA_START
+        self.per_beta_end       = per_beta_end       if per_beta_end is not None else self.PER_BETA_END
+        self.per_beta_anneal    = per_beta_anneal    or self.PER_BETA_ANNEAL
 
         if device is None:
             if torch.cuda.is_available():
@@ -109,7 +126,12 @@ class DRQNAgent:
             eps=self.RMS_EPS,
         )
 
-        self.memory = EpisodicReplayBuffer(self.replay_capacity, obs_shape)
+        self.memory = EpisodicReplayBuffer(
+            self.replay_capacity,
+            obs_shape,
+            prioritized=self.prioritized,
+            alpha=self.per_alpha,
+        )
 
         self.steps_done = 0
         self.updates_done = 0
@@ -144,18 +166,25 @@ class DRQNAgent:
         self.steps_done += 1
 
     def update(self) -> float | None:
-        """One gradient step on a batch of sampled subsequences."""
+        """One gradient step on a batch of sampled subsequences.
+
+        With prioritized replay enabled, importance-sampling weights are applied
+        to the per-sequence loss, and per-episode priorities are refreshed
+        from the magnitude of the TD error after the step.
+        """
         if len(self.memory) < self.replay_start_size:
             return None
 
-        batch = self.memory.sample(self.batch_size, self.seq_len)
+        beta = self._current_per_beta()
+        batch = self.memory.sample(self.batch_size, self.seq_len, beta=beta)
 
-        obs      = torch.from_numpy(batch["obs"]).to(self.device)
-        actions  = torch.from_numpy(batch["actions"]).to(self.device)
-        rewards  = torch.from_numpy(batch["rewards"]).to(self.device)
-        next_obs = torch.from_numpy(batch["next_obs"]).to(self.device)
-        dones    = torch.from_numpy(batch["dones"]).to(self.device)
-        mask     = torch.from_numpy(batch["mask"]).to(self.device)
+        obs        = torch.from_numpy(batch["obs"]).to(self.device)
+        actions    = torch.from_numpy(batch["actions"]).to(self.device)
+        rewards    = torch.from_numpy(batch["rewards"]).to(self.device)
+        next_obs   = torch.from_numpy(batch["next_obs"]).to(self.device)
+        dones      = torch.from_numpy(batch["dones"]).to(self.device)
+        mask       = torch.from_numpy(batch["mask"]).to(self.device)
+        is_weights = torch.from_numpy(batch["is_weights"]).to(self.device)
 
         q_all, _ = self.online_net(obs)
         q_values = q_all.gather(2, actions.unsqueeze(-1)).squeeze(-1)
@@ -170,8 +199,11 @@ class DRQNAgent:
         elementwise = nn.functional.smooth_l1_loss(
             q_values, targets, reduction="none"
         )
-        valid = mask.sum().clamp(min=1.0)
-        loss = (elementwise * mask).sum() / valid
+        # Per-sequence loss weighted by IS weights (PER); reduces to plain
+        # masked Huber when prioritized=False (all weights equal 1).
+        per_seq_valid = mask.sum(dim=1).clamp(min=1.0)
+        per_seq_loss  = (elementwise * mask).sum(dim=1) / per_seq_valid
+        loss = (per_seq_loss * is_weights).mean()
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -181,7 +213,19 @@ class DRQNAgent:
         if self.updates_done % self.target_update_freq == 0:
             self._sync_target()
 
+        if self.prioritized:
+            with torch.no_grad():
+                td_abs = (q_values - targets).abs() * mask
+                # Per-episode priority = mean |TD error| over valid timesteps.
+                ep_priorities = (td_abs.sum(dim=1) / per_seq_valid).cpu().numpy()
+            self.memory.update_priorities(batch["indices"], ep_priorities)
+
         return loss.item()
+
+    def _current_per_beta(self) -> float:
+        """Linearly anneal beta from per_beta_start to per_beta_end."""
+        frac = min(1.0, self.steps_done / self.per_beta_anneal)
+        return self.per_beta_start + (self.per_beta_end - self.per_beta_start) * frac
 
     def current_epsilon(self) -> float:
         return max(

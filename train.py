@@ -41,6 +41,16 @@ def parse_args() -> argparse.Namespace:
                    help="Hidden size of the LSTM (DRQN only).")
     p.add_argument("--seq-len",      type=int, default=16,
                    help="Length of subsequences sampled for DRQN updates (try 16-32).")
+    p.add_argument("--prioritized",  action="store_true",
+                   help="Use Prioritized Experience Replay (DRQN only).")
+    p.add_argument("--per-alpha",    type=float, default=0.6,
+                   help="PER exponent on priorities (alpha).")
+    p.add_argument("--per-beta-start", type=float, default=0.4,
+                   help="Initial PER importance-sampling exponent (beta).")
+    p.add_argument("--per-beta-end", type=float, default=1.0,
+                   help="Final PER beta after annealing.")
+    p.add_argument("--per-beta-anneal", type=int, default=1_000_000,
+                   help="Env steps over which PER beta anneals to its end value.")
     p.add_argument("--env",          default=None,
                    help="Env id; defaults to ALE/Pong-v5 for atari, MiniGrid-MemoryS9-v0 for minigrid")
     p.add_argument("--total-steps",  type=int,   default=1_000_000)
@@ -172,10 +182,19 @@ def train(args: argparse.Namespace) -> None:
             **common_kwargs,
             lstm_hidden_size=args.lstm_hidden,
             seq_len=args.seq_len,
+            prioritized=args.prioritized,
+            per_alpha=args.per_alpha,
+            per_beta_start=args.per_beta_start,
+            per_beta_end=args.per_beta_end,
+            per_beta_anneal=args.per_beta_anneal,
         )
     else:
         agent = DQNAgent(**common_kwargs)
     print(f"Agent       : {args.agent}")
+    if args.agent == "drqn" and args.prioritized:
+        print(f"Replay      : prioritized (alpha={args.per_alpha}, "
+              f"beta {args.per_beta_start}->{args.per_beta_end} over "
+              f"{args.per_beta_anneal:,} steps)")
     print(f"Device      : {agent.device}")
 
     if args.resume:
