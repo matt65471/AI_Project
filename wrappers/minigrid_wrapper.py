@@ -4,7 +4,7 @@ import numpy as np
 import cv2
 from gymnasium import spaces
 from collections import deque
-from minigrid.wrappers import RGBImgObsWrapper
+from minigrid.wrappers import RGBImgPartialObsWrapper, ImgObsWrapper
 
 
 class MiniGridWrapper(gym.Wrapper):
@@ -33,6 +33,11 @@ class MiniGridWrapper(gym.Wrapper):
 
     def _process(self, obs):
         # obs is (H, W, 3) RGB uint8
+        if isinstance(obs, dict):
+            img = obs["image"]
+        else:
+            img = obs
+        img = img.astype(np.uint8)
         gray = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
         h, w = self.screen_size
         resized = cv2.resize(gray, (w, h), interpolation=cv2.INTER_AREA)
@@ -49,8 +54,7 @@ class MiniGridWrapper(gym.Wrapper):
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        img = self._extract_image(obs)
-        processed = self._process(img)
+        processed = self._process(obs)
         self._frames.clear()
         for _ in range(self.frame_stack):
             self._frames.append(processed)
@@ -58,8 +62,11 @@ class MiniGridWrapper(gym.Wrapper):
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
-        img = self._extract_image(obs)
-        processed = self._process(img)
+        processed = self._process(obs)
+
+        #cv2.imshow("What the AI sees", processed)
+        #cv2.waitKey(1)
+
         self._frames.append(processed)
         return self._get_obs(), reward, terminated, truncated, info
 
@@ -75,7 +82,8 @@ def make_minigrid_env(
     Uses RGBImgObsWrapper to convert symbolic obs to RGB pixels.
     """
     env = gym.make(env_id, render_mode=render_mode)
-    env = RGBImgObsWrapper(env)     # (H, W, 3) RGB pixels
+    env = RGBImgPartialObsWrapper(env)
+    env = ImgObsWrapper(env)     # (H, W, 3) RGB pixels
     env = MiniGridWrapper(
         env,
         frame_stack=frame_stack,
