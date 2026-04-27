@@ -41,6 +41,6 @@ def make_minigrid_env(env_id="MiniGrid-MemoryS7-v0", render_mode=None):
     Returns a lightweight environment for CPU training.
     Uses symbolic observations instead of rendered pixels.
     """
-    env = gym.make(env_id, render_mode=render_mode, max_episode_steps=50)
+    env = gym.make(env_id, render_mode=render_mode, max_episode_steps=100)
     env = MiniGridLightWrapper(env)
     return env
